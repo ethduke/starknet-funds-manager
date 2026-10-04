@@ -29,7 +29,17 @@ cargo build --release
 
 Options:
 - `--slippage 0.02` sets swap slippage (default 0.01, max 0.1).
+- `--send-to 0xADDRESS` sends all STRK to another wallet afterwards (see below).
 - `STARKNET_RPC=https://...` sets a custom RPC. Fallback endpoints live in `rpc_list.json`.
+
+## Send funds to another wallet
+
+```bash
+./target/release/swap-to-strk --send-to 0xDESTINATION --dry-run   # preview the amount and gas
+./target/release/swap-to-strk --send-to 0xDESTINATION             # upgrade + swap, then send all STRK
+```
+
+After the upgrades and swaps, the tool sends the whole STRK balance minus a gas reserve. Unused gas stays in the account. Use this if a wallet app fails to send from a recovered account with "Out of gas": some apps leave signature validation out of their gas estimate, and this tool includes it.
 
 ## Legacy accounts: the relayer flow
 

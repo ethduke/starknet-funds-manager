@@ -18,7 +18,7 @@ STARKNET_RPC=https://...    # optional: tried before rpc_list.json
 RELAYER_ACCOUNT=0x...       # optional: wallet that pays the legacy meta-tx (set both or neither)
 RELAYER_PRIVATE_KEY=0x...   # optional
 ```
-Flags: `--dry-run`, `--slippage <0..0.1>` (default 0.01).
+Flags: `--dry-run`, `--slippage <0..0.1>` (default 0.01), `--send-to <address>` (after swaps, send all STRK minus gas there).
 `.env` and `rpc_list.json` are read from the working directory, falling back to the crate directory.
 RPC order: `STARKNET_RPC`, `rpc_list.json`, then the `DEFAULT_RPC` const. Each is probed with `chain_id`; dead ones are skipped and only their host is printed.
 
@@ -29,10 +29,11 @@ RPC order: `STARKNET_RPC`, `rpc_list.json`, then the `DEFAULT_RPC` const. Each i
    2. 0.2.3.1 → Argent 0.4.0: 0.2.3.1 is on the protocol's v1-bound whitelist, so the account sends its own v3 tx
       (`ExecutionEncoding::Legacy`), `upgrade(0.4.0, [0])`, which also drops the proxy.
    Requires the key to match the signer and no guardian.
-2. Relayer refund: leftover STRK (≥ 0.05) on a tool-generated relayer goes back to the main account, minus a 3× gas bound.
+2. Relayer refund: leftover STRK (≥ 0.05) on a tool-generated relayer goes back to the main account via `send_all_strk`.
 3. Regular upgrade: Argent 0.3.0/0.3.1/0.4.0 → 0.5.0, Braavos 1.0.0/1.1.0 → 1.2.0 (target class verified on-chain).
 4. Holdings: balances for every token in Ekubo's token list.
 5. Swaps: AVNU quote + build per token, validated, then sent as one multicall. Gas comes from the STRK balance when it is ≥ 3× the estimate; otherwise the AVNU paymaster (SNIP-29, fee paid from swap output) is used.
+6. Transfer (`--send-to`): `send_all_strk` sends the balance minus a gas bound (1.5× gas × 1.5× price, estimated with validation).
 
 ## Relayer
 - If `RELAYER_*` is unset, the tool generates an OpenZeppelin account (class `0x05b4b5…3564`, salt = public key) and
@@ -52,6 +53,8 @@ RPC order: `STARKNET_RPC`, `rpc_list.json`, then the `DEFAULT_RPC` const. Each i
    the inner v0 tx with version 2^128, so the signature fails. `send_measured` simulates a normal signed tx and sets gas bounds.
 5. `wait()` waits for ACCEPTED_ON_L2. Pre-confirmed receipts arrive before `latest` state updates.
 6. SNIP-9 v2 typed data carries selectors as hex, but starknet-rust hashes entrypoint names, so they are converted before signing.
+7. A recovered Argent 0.5.0 account spends ~2M L2 gas in `__validate__` (~3.4M for a transfer). Wallet apps that estimate without
+   validation (e.g. Ready: 2.93M bound) fail with "Out of gas"; `--send-to` and the relayer refund use validated estimates.
 
 ## Tests
 `cargo test` covers the v0 tx hash and the relayer address (both checked against starknet.js) and AVNU call validation (accept, foreign beneficiary, low min-out, injected transfer).

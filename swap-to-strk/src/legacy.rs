@@ -17,7 +17,7 @@ use starknet_rust::{
     signers::{LocalWallet, SigningKey},
 };
 
-use crate::{Config, Rpc, STRK, Wallet, balance, latest, selector, units, wait};
+use crate::{Config, Rpc, STRK, Wallet, balance, latest, selector, send_all_strk, units, wait};
 
 const PROXY_V0_2_2: Felt =
     Felt::from_hex_unchecked("0x25ec026985a3bf9d0cc1fe17326b245dfdc3ff89b8fde106542a3ea56c5a918");
@@ -273,36 +273,7 @@ pub async fn refund_relayer(provider: &Rpc, chain_id: Felt, cfg: &Config) -> Res
         return Ok(());
     };
 
-    let transfer = |amount: u128| Call {
-        to: STRK,
-        selector: selector("transfer"),
-        calldata: vec![cfg.account, amount.into(), Felt::ZERO],
-    };
-    let fee = wallet.execute_v3(vec![transfer(funds)]).estimate_fee().await?;
-    let gas = |consumed: u64| consumed.saturating_mul(3) / 2;
-    let (l1, l2, l1_data) = (gas(fee.l1_gas_consumed), gas(fee.l2_gas_consumed), gas(fee.l1_data_gas_consumed));
-    let (p1, p2, p1_data) = (fee.l1_gas_price * 2, fee.l2_gas_price * 2, fee.l1_data_gas_price * 2);
-    let max_fee = u128::from(l1) * p1 + u128::from(l2) * p2 + u128::from(l1_data) * p1_data;
-    let Some(amount) = funds.checked_sub(max_fee).filter(|a| *a > 0) else {
-        println!("  Nothing left after gas");
-        return Ok(());
-    };
-    println!("  Returning {} STRK to {:#x} (gas up to {} STRK)", units(amount, 18), cfg.account, units(max_fee, 18));
-    if !cfg.execute {
-        return Ok(());
-    }
-    let tx = wallet
-        .execute_v3(vec![transfer(amount)])
-        .l1_gas(l1)
-        .l1_gas_price(p1)
-        .l2_gas(l2)
-        .l2_gas_price(p2)
-        .l1_data_gas(l1_data)
-        .l1_data_gas_price(p1_data)
-        .tip(0)
-        .send()
-        .await?;
-    wait(provider, tx.transaction_hash).await
+    send_all_strk(&wallet, cfg.account, cfg.execute).await
 }
 
 fn oz_address(key: &SigningKey) -> Felt {

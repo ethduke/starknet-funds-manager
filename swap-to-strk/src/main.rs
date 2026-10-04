@@ -80,6 +80,7 @@ struct Config {
     env_file: PathBuf,
     slippage: f64,
     execute: bool,
+    send_to: Option<Felt>,
 }
 
 #[derive(Deserialize)]
@@ -214,6 +215,11 @@ async fn main() -> Result<()> {
         paymaster(&http, &account, &cfg.key, &calls, &entrypoints, cfg.execute).await?;
     }
 
+    if let Some(to) = cfg.send_to {
+        println!("\n━━━ TRANSFER ━━━");
+        send_all_strk(&account, to, cfg.execute).await?;
+    }
+
     println!("\n━━━ COMPLETE ━━━");
     if cfg.execute {
         println!("  ✓ Transactions executed\n");
@@ -229,12 +235,16 @@ fn config() -> Result<Config> {
         dotenvy::from_path(&fallback).ok();
         fallback
     });
-    let (mut slippage, mut execute) = (0.01, true);
+    let (mut slippage, mut execute, mut send_to) = (0.01, true, None);
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--dry-run" => execute = false,
             "--slippage" => slippage = args.next().context("--slippage needs a value")?.parse()?,
+            "--send-to" => {
+                let to = args.next().context("--send-to needs an address")?;
+                send_to = Some(felt(&to).ok().filter(|f| *f != Felt::ZERO).context("--send-to is not a valid address")?);
+            }
             other => bail!("unknown argument {other}"),
         }
     }
@@ -261,14 +271,17 @@ fn config() -> Result<Config> {
         _ => bail!("set both RELAYER_ACCOUNT and RELAYER_PRIVATE_KEY, or neither"),
     };
 
+    let account = address("STARKNET_ACCOUNT")?;
+    ensure!(send_to != Some(account), "--send-to is the account itself");
     Ok(Config {
-        account: address("STARKNET_ACCOUNT")?,
+        account,
         key: key("STARKNET_PRIVATE_KEY")?,
         rpc: var("STARKNET_RPC"),
         relayer,
         env_file,
         slippage,
         execute,
+        send_to,
     })
 }
 
@@ -323,6 +336,42 @@ async fn can_pay(account: &Wallet, calls: &[Call]) -> bool {
             false
         }
     }
+}
+
+// Gas bounds come from an estimate that includes signature validation; wallets that skip it can underprice
+// accounts with an expensive `__validate__` (e.g. migrated Argent 0.5.0) and fail with "Out of gas".
+async fn send_all_strk(wallet: &Wallet, to: Felt, execute: bool) -> Result<()> {
+    let funds = balance(wallet.provider(), STRK, wallet.address()).await.context("can't read STRK balance")?;
+    let transfer = |amount: u128| Call { to: STRK, selector: selector("transfer"), calldata: vec![to, amount.into(), Felt::ZERO] };
+    let fee = wallet.execute_v3(vec![transfer(funds)]).estimate_fee().await?;
+    let margin = |v: u128| v.saturating_mul(3) / 2;
+    let (l1, l2, l1_data) = (
+        margin(fee.l1_gas_consumed.into()) as u64,
+        margin(fee.l2_gas_consumed.into()) as u64,
+        margin(fee.l1_data_gas_consumed.into()) as u64,
+    );
+    let (p1, p2, p1_data) = (margin(fee.l1_gas_price), margin(fee.l2_gas_price), margin(fee.l1_data_gas_price));
+    let max_fee = u128::from(l1) * p1 + u128::from(l2) * p2 + u128::from(l1_data) * p1_data;
+    let Some(amount) = funds.checked_sub(max_fee).filter(|a| *a > 0) else {
+        println!("  Nothing to send after gas ({} STRK available)", units(funds, 18));
+        return Ok(());
+    };
+    println!("  Sending {} STRK to {to:#x} (gas up to {} STRK)", units(amount, 18), units(max_fee, 18));
+    if !execute {
+        return Ok(());
+    }
+    let tx = wallet
+        .execute_v3(vec![transfer(amount)])
+        .l1_gas(l1)
+        .l1_gas_price(p1)
+        .l2_gas(l2)
+        .l2_gas_price(p2)
+        .l1_data_gas(l1_data)
+        .l1_data_gas_price(p1_data)
+        .tip(0)
+        .send()
+        .await?;
+    wait(wallet.provider(), tx.transaction_hash).await
 }
 
 async fn send(account: &Wallet, calls: Vec<Call>) -> Result<()> {
