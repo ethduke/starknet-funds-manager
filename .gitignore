@@ -1,0 +1,6 @@
+.env
+.env.*
+target/
+.DS_Store
+ekubo-report.md
+OPUS_5_5_GUIDE.md

@@ -1,0 +1,9 @@
+{
+  "default": "https://api.cartridge.gg/x/starknet/mainnet",
+  "fallbacks": [
+    "https://starknet-rpc.publicnode.com",
+    "https://public.1rpc.io/starknet",
+    "https://starknet.drpc.org",
+    "https://starknet.api.onfinality.io/public"
+  ]
+}

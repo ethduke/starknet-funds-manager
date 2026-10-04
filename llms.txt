@@ -1,0 +1,73 @@
+# starknet-funds-manager
+
+> Rust CLI (`swap-to-strk/`) that rescues funds from existing Starknet wallets: it upgrades outdated Argent/Braavos
+> accounts, including legacy Argent/Ready 0.2.x accounts that can no longer send transactions, then swaps every token
+> to STRK through AVNU. Mainnet only. Live by default; `--dry-run` previews.
+
+## Layout
+- `swap-to-strk/src/main.rs`: config, RPC fallback, wallet upgrades, holdings scan, AVNU swaps, AVNU paymaster
+- `swap-to-strk/src/legacy.rs`: legacy Argent/Ready 0.2.x recovery, relayer creation/deploy/refund
+- `swap-to-strk/rpc_list.json`: RPC endpoints (`default` + `fallbacks`)
+- `swap-to-strk/.env`: secrets, gitignored, mode 600
+
+## Configuration (`swap-to-strk/.env` or env vars)
+```
+STARKNET_ACCOUNT=0x...      # required: wallet to rescue
+STARKNET_PRIVATE_KEY=0x...  # required: its signer key
+STARKNET_RPC=https://...    # optional: tried before rpc_list.json
+RELAYER_ACCOUNT=0x...       # optional: wallet that pays the legacy meta-tx (set both or neither)
+RELAYER_PRIVATE_KEY=0x...   # optional
+```
+Flags: `--dry-run`, `--slippage <0..0.1>` (default 0.01).
+`.env` and `rpc_list.json` are read from the working directory, falling back to the crate directory.
+RPC order: `STARKNET_RPC`, `rpc_list.json`, then the `DEFAULT_RPC` const. Each is probed with `chain_id`; dead ones are skipped and only their host is printed.
+
+## Run flow
+1. Legacy recovery, if the account is the Argent/Ready proxy `0x25ec02…a918` with implementation 0.2.1/0.2.2/0.2.3.x:
+   1. 0.2.x → 0.2.3.1: the account signs a v0 `__execute__([upgrade])` (v0 tx hash, Pedersen). A relayer calls
+      Argent's helper `execute_meta_tx_v0` at `0x03e21a…253c` (Starknet 0.14 `meta_tx_v0` syscall) and pays gas.
+   2. 0.2.3.1 → Argent 0.4.0: 0.2.3.1 is on the protocol's v1-bound whitelist, so the account sends its own v3 tx
+      (`ExecutionEncoding::Legacy`), `upgrade(0.4.0, [0])`, which also drops the proxy.
+   Requires the key to match the signer and no guardian.
+2. Relayer refund: leftover STRK (≥ 0.05) on a tool-generated relayer goes back to the main account, minus a 3× gas bound.
+3. Regular upgrade: Argent 0.3.0/0.3.1/0.4.0 → 0.5.0, Braavos 1.0.0/1.1.0 → 1.2.0 (target class verified on-chain).
+4. Holdings: balances for every token in Ekubo's token list.
+5. Swaps: AVNU quote + build per token, validated, then sent as one multicall. Gas comes from the STRK balance when it is ≥ 3× the estimate; otherwise the AVNU paymaster (SNIP-29, fee paid from swap output) is used.
+
+## Relayer
+- If `RELAYER_*` is unset, the tool generates an OpenZeppelin account (class `0x05b4b5…3564`, salt = public key) and
+  appends its key to `.env`, printing only the address. It then exits with "send ≥ 1 STRK, rerun" instructions.
+- On rerun with ≥ 1 STRK it deploys the relayer (~0.04 STRK) and relays (~0.04 STRK).
+- A user-supplied relayer (any wallet with ≥ 1 STRK) is used as is and never swept.
+- Tool-generated means `RELAYER_ACCOUNT` equals the OZ counterfactual address of `RELAYER_PRIVATE_KEY`.
+- If `.env` has empty `RELAYER_*` lines, the tool refuses to generate a relayer instead of creating one every run.
+
+## Critical constraints
+1. Keys only come from `.env` or env vars and are never printed, including in parse errors.
+2. AVNU `/build` output is executed only if it is exactly `approve(sell token → AVNU exchange 0x04270219…b0f, sell amount)`
+   plus one `multi_route_swap` with the same sell token/amount, buy = STRK, beneficiary = our account,
+   min out ≥ quote × (1 − slippage), and integrator fee 0. Anything else skips the token.
+3. Paymaster typed data may only append one STRK transfer ≤ the quoted max fee to our calls.
+4. Legacy txs must not use starknet-rust `estimate_fee`/`simulate`: they run as query txs, and `meta_tx_v0` then hashes
+   the inner v0 tx with version 2^128, so the signature fails. `send_measured` simulates a normal signed tx and sets gas bounds.
+5. `wait()` waits for ACCEPTED_ON_L2. Pre-confirmed receipts arrive before `latest` state updates.
+6. SNIP-9 v2 typed data carries selectors as hex, but starknet-rust hashes entrypoint names, so they are converted before signing.
+
+## Tests
+`cargo test` covers the v0 tx hash and the relayer address (both checked against starknet.js) and AVNU call validation (accept, foreign beneficiary, low min-out, injected transfer).
+
+## Not supported
+- Argent 0.2.0, the old Argent proxy `0x71c3c9…a64`, and OpenZeppelin Cairo 0 accounts
+- Testnets: `meta_tx_v0` is mainnet only
+
+## Code style
+- Minimal comments, only for non-obvious constraints or sourced constants
+- No AI co-author lines in commits
+- Rust edition 2024, no unsafe code
+
+## References
+- Legacy recovery reference implementation: https://github.com/argentlabs/upgrade-v0-account
+- Starknet v0.14 deprecations: https://github.com/starknet-io/deprecation-guide
+- AVNU docs: https://docs.avnu.fi/
+- SNIPs: https://github.com/starknet-io/SNIPs
+- Starknet RPC spec: https://github.com/starkware-libs/starknet-specs
