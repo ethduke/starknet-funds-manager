@@ -2,7 +2,7 @@
 
 use std::{fs, io::Write, path::Path};
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use starknet_rust::{
     accounts::{Account, AccountFactory, ConnectedAccount, ExecutionEncoding, OpenZeppelinAccountFactory, SingleOwnerAccount},
     core::{
@@ -17,7 +17,7 @@ use starknet_rust::{
     signers::{LocalWallet, SigningKey},
 };
 
-use crate::{Config, Rpc, STRK, Wallet, balance, latest, selector, send_all_strk, units, wait};
+use crate::{Config, Rpc, STRK, Wallet, balance, check_signer, latest, selector, send_all_strk, units, wait};
 
 const PROXY_V0_2_2: Felt =
     Felt::from_hex_unchecked("0x25ec026985a3bf9d0cc1fe17326b245dfdc3ff89b8fde106542a3ea56c5a918");
@@ -55,7 +55,9 @@ pub async fn migrate(provider: &Rpc, chain_id: Felt, cfg: &Config) -> Result<boo
     let (account, key) = (cfg.account, &cfg.key);
     let mut announced = false;
     loop {
-        let class = provider.get_class_hash_at(latest(), account).await?;
+        let class = provider.get_class_hash_at(latest(), account).await.with_context(|| {
+            format!("no account at {account:#x}; STARKNET_ACCOUNT must be the deployed account address, not the public key")
+        })?;
         if class != PROXY_V0_2_2 {
             return Ok(true);
         }
@@ -190,8 +192,13 @@ async fn check_owner(provider: &Rpc, account: Felt, key: &SigningKey) -> Result<
 async fn relayer_account(provider: &Rpc, chain_id: Felt, relayer: &Relayer, execute: bool) -> Result<Option<Wallet>> {
     let signer = LocalWallet::from_signing_key(relayer.key.clone());
     let encoding = match provider.get_class_at(latest(), relayer.address).await {
-        Ok(ContractClass::Legacy(_)) => ExecutionEncoding::Legacy,
-        Ok(ContractClass::Sierra(_)) => ExecutionEncoding::New,
+        Ok(class) => {
+            check_signer(provider, relayer.address, &relayer.key, "RELAYER_PRIVATE_KEY").await?;
+            match class {
+                ContractClass::Legacy(_) => ExecutionEncoding::Legacy,
+                ContractClass::Sierra(_) => ExecutionEncoding::New,
+            }
+        }
         Err(ProviderError::StarknetError(StarknetError::ContractNotFound)) => {
             ensure!(
                 oz_address(&relayer.key) == relayer.address,

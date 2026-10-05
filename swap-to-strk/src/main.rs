@@ -161,6 +161,7 @@ async fn main() -> Result<()> {
     let known = class == ARGENT_0_5_0 || class == BRAAVOS_1_2_0 || UPGRADES.iter().any(|u| u.0 == class);
     let note = if known { "" } else { " (unrecognized, no upgrade path)" };
     println!("  Class:    {class:#x}{note}");
+    check_signer(account.provider(), cfg.account, &cfg.key, "STARKNET_PRIVATE_KEY").await?;
     if let Err(e) = legacy::refund_relayer(account.provider(), chain_id, &cfg).await {
         println!("  ⚠ Relayer refund failed: {e}");
     }
@@ -262,20 +263,29 @@ fn config() -> Result<Config> {
         ))
     };
 
+    let pair = |address_var: &str, key_var: &str| -> Result<(Felt, SigningKey)> {
+        let (address, key) = (address(address_var)?, key(key_var)?);
+        ensure!(
+            address != key.verifying_key().scalar(),
+            "{address_var} is the public key of {key_var}; use the account address shown in your wallet instead"
+        );
+        Ok((address, key))
+    };
+
     let relayer = match (var("RELAYER_ACCOUNT"), var("RELAYER_PRIVATE_KEY")) {
         (None, None) => None,
-        (Some(_), Some(_)) => Some(legacy::Relayer {
-            address: address("RELAYER_ACCOUNT")?,
-            key: key("RELAYER_PRIVATE_KEY")?,
-        }),
+        (Some(_), Some(_)) => {
+            let (address, key) = pair("RELAYER_ACCOUNT", "RELAYER_PRIVATE_KEY")?;
+            Some(legacy::Relayer { address, key })
+        }
         _ => bail!("set both RELAYER_ACCOUNT and RELAYER_PRIVATE_KEY, or neither"),
     };
 
-    let account = address("STARKNET_ACCOUNT")?;
+    let (account, key) = pair("STARKNET_ACCOUNT", "STARKNET_PRIVATE_KEY")?;
     ensure!(send_to != Some(account), "--send-to is the account itself");
     Ok(Config {
         account,
-        key: key("STARKNET_PRIVATE_KEY")?,
+        key,
         rpc: var("STARKNET_RPC"),
         relayer,
         env_file,
@@ -372,6 +382,34 @@ async fn send_all_strk(wallet: &Wallet, to: Felt, execute: bool) -> Result<()> {
         .send()
         .await?;
     wait(wallet.provider(), tx.transaction_hash).await
+}
+
+// Some accounts (e.g. Braavos) skip signature checks during fee estimation, so a wrong key would only surface
+// at send time. SNIP-6 `is_valid_signature` returns 'VALID' (Cairo 0 accounts: 1) for a signer's signature.
+async fn check_signer(provider: &Rpc, address: Felt, key: &SigningKey, key_var: &str) -> Result<()> {
+    const VALID: Felt = Felt::from_hex_unchecked("0x56414c4944");
+    let hash = selector("swap-to-strk signer check");
+    let sig = key.sign(&hash)?;
+    let call = FunctionCall {
+        contract_address: address,
+        entry_point_selector: selector("is_valid_signature"),
+        calldata: vec![hash, Felt::TWO, sig.r, sig.s],
+    };
+    match provider.call(call, latest()).await {
+        Ok(r) if matches!(r.first(), Some(v) if *v == VALID || *v == Felt::ONE) => Ok(()),
+        Err(e) if e.to_string().contains("not found") => Ok(()),
+        _ => {
+            println!("\n━━━ KEY DOES NOT MATCH ━━━");
+            println!("  {key_var} can't sign for {address:#x}. What to do:");
+            println!("  1. Wrong key: in your wallet, export the private key of this exact account (each account");
+            println!("     has its own key) and put it in {key_var}. The address stays the account address (0x…),");
+            println!("     not the public key.");
+            println!("  2. Wrong address: if the key belongs to another account, use that account's address instead.");
+            println!("  3. Extra protection on: 2FA, guardian/Shield, multisig or a hardware signer need a second");
+            println!("     signature. Turn it off in the wallet app, wait for it to take effect, then rerun.");
+            bail!("{key_var} is not a valid signer for {address:#x}")
+        }
+    }
 }
 
 async fn send(account: &Wallet, calls: Vec<Call>) -> Result<()> {

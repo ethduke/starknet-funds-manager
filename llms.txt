@@ -45,6 +45,11 @@ RPC order: `STARKNET_RPC`, `rpc_list.json`, then the `DEFAULT_RPC` const. Each i
 
 ## Critical constraints
 1. Keys only come from `.env` or env vars and are never printed, including in parse errors.
+   At startup (and for a user-supplied relayer) the key is checked with SNIP-6 `is_valid_signature` on a dummy hash
+   ('VALID', or 1 on Cairo 0). On mismatch the tool prints what to do (wrong key, wrong address, 2FA/guardian/multisig)
+   and exits. Braavos skips signature checks during fee estimation, so without this a wrong key only fails at send time.
+   Config also rejects an address equal to the key's public key, and an undeployed address errors with "use the account
+   address, not the public key".
 2. AVNU `/build` output is executed only if it is exactly `approve(sell token → AVNU exchange 0x04270219…b0f, sell amount)`
    plus one `multi_route_swap` with the same sell token/amount, buy = STRK, beneficiary = our account,
    min out ≥ quote × (1 − slippage), and integrator fee 0. Anything else skips the token.
