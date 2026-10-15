@@ -348,8 +348,7 @@ async fn can_pay(account: &Wallet, calls: &[Call]) -> bool {
     }
 }
 
-// Gas bounds come from an estimate that includes signature validation; wallets that skip it can underprice
-// accounts with an expensive `__validate__` (e.g. migrated Argent 0.5.0) and fail with "Out of gas".
+// Gas bounds come from an estimate that includes signature validation, so they also cover `__validate__`.
 async fn send_all_strk(wallet: &Wallet, to: Felt, execute: bool) -> Result<()> {
     let funds = balance(wallet.provider(), STRK, wallet.address()).await.context("can't read STRK balance")?;
     let transfer = |amount: u128| Call { to: STRK, selector: selector("transfer"), calldata: vec![to, amount.into(), Felt::ZERO] };

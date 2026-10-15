@@ -39,7 +39,7 @@ Options:
 ./target/release/swap-to-strk --send-to 0xDESTINATION             # upgrade + swap, then send all STRK
 ```
 
-After the upgrades and swaps, the tool sends the whole STRK balance minus a gas reserve. Unused gas stays in the account. Use this if a wallet app fails to send from a recovered account with "Out of gas": some apps leave signature validation out of their gas estimate, and this tool includes it.
+After the upgrades and swaps, the tool sends the whole STRK balance minus a gas reserve. Unused gas stays in the account. The gas bound comes from an estimate that includes signature validation. Use this if a wallet app can't send from a recovered account.
 
 ## Legacy accounts: the relayer flow
 

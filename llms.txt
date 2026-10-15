@@ -58,8 +58,9 @@ RPC order: `STARKNET_RPC`, `rpc_list.json`, then the `DEFAULT_RPC` const. Each i
    the inner v0 tx with version 2^128, so the signature fails. `send_measured` simulates a normal signed tx and sets gas bounds.
 5. `wait()` waits for ACCEPTED_ON_L2. Pre-confirmed receipts arrive before `latest` state updates.
 6. SNIP-9 v2 typed data carries selectors as hex, but starknet-rust hashes entrypoint names, so they are converted before signing.
-7. A recovered Argent 0.5.0 account spends ~2M L2 gas in `__validate__` (~3.4M for a transfer). Wallet apps that estimate without
-   validation (e.g. Ready: 2.93M bound) fail with "Out of gas"; `--send-to` and the relayer refund use validated estimates.
+7. Measured on mainnet: a recovered Argent 0.5.0 account spends ~0.3M L2 gas in `__validate__` and ~1.6M in total for a STRK
+   transfer. An estimate without validation (~1.5M) plus starknet.js's default 50% overhead still covers it. `--send-to` and
+   the relayer refund estimate with validation anyway.
 
 ## Tests
 `cargo test` covers the v0 tx hash and the relayer address (both checked against starknet.js) and AVNU call validation (accept, foreign beneficiary, low min-out, injected transfer).
